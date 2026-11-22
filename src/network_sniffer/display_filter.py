@@ -50,6 +50,7 @@ _MAX_GROUP_DEPTH = 32
 class DisplayFilterError(ValueError):
     def __init__(self, message: str, column: int) -> None:
         self.column = column
+        self.detail = message
         super().__init__(f"Column {column}: {message}")
 
 

@@ -2,6 +2,9 @@ import curses
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass
+from unicodedata import combining, east_asian_width
+
+from .tui_i18n import Language
 
 
 # xterm palette, with an eight-color equivalent for standard terminals.
@@ -91,59 +94,101 @@ def state_role(state: str) -> str:
     return "muted"
 
 
+def _character_width(char: str) -> int:
+    if combining(char):
+        return 0
+    return 2 if east_asian_width(char) in ("W", "F") else 1
+
+
+def cell_width(text: str) -> int:
+    return len(text) if text.isascii() else sum(map(_character_width, text))
+
+
+def _fit_cells(text: str, width: int) -> tuple[str, int]:
+    if text.isascii():
+        return text[:width], min(len(text), width)
+    used = 0
+    for index, char in enumerate(text):
+        advance = _character_width(char)
+        if used + advance > width:
+            return text[:index], used
+        used += advance
+    return text, used
+
+
+def pad_cells(text: str, width: int) -> str:
+    clipped, used = _fit_cells(text, width)
+    return clipped + " " * (width - used)
+
+
 class Drawing:
     """A frame's dimensions and the shared styles used by every curses view."""
 
-    def __init__(self, screen: curses.window, theme: Theme) -> None:
+    def __init__(self, screen: curses.window, theme: Theme, language: Language) -> None:
         self.screen = screen
         self.theme = theme
+        self.t = language
         self.height, columns = screen.getmaxyx()
         self.width = columns - 1  # Leave the lower-right cell untouched.
 
     def text(self, row: int, text: str, role: str = "body", *, x: int = 0, width: int | None = None) -> None:
         available = self.width - x if width is None else min(width, self.width - x)
         if 0 <= row < self.height and available > 0 and text:
-            self.screen.addnstr(row, x, text, available, self.theme[role])
+            clipped, _ = _fit_cells(text, available)
+            if clipped:
+                self.screen.addstr(row, x, clipped, self.theme[role])
 
     def bar(self, row: int, text: str, role: str = "section", *, x: int = 0, width: int | None = None) -> None:
         available = self.width - x if width is None else min(width, self.width - x)
         if available > 0:
-            self.text(row, text[:available].ljust(available), role, x=x, width=available)
+            self.text(row, pad_cells(text, available), role, x=x, width=available)
 
     def title(self, text: str, state: str | None = None, suffix: str = "") -> None:
         self.bar(0, "", "title")
         x = 1
         if self.width >= 62:
-            self.text(0, " SNIFFER ", "identity")
-            x = 10
+            identity = f" {self.t('SNIFFER')} "
+            self.text(0, identity, "identity")
+            x = cell_width(identity) + 1
         self.text(0, text + (" | " if state is not None else ""), "title", x=x)
-        x += len(text) + (3 if state is not None else 0)
+        x += cell_width(text) + (3 if state is not None else 0)
         if state is not None:
             role = state_role(state)
-            self.text(0, state, "title" if role == "muted" else f"title_{role}", x=x)
-            x += len(state)
+            label = self.t(state)
+            self.text(0, label, "title" if role == "muted" else f"title_{role}", x=x)
+            x += cell_width(label)
         self.text(0, suffix, "title", x=x)
 
     def tabs(self, row: int, names: Sequence[str], selected: int) -> None:
         x = 0
         for index, name in enumerate(names):
-            label = f" {index + 1} {name} "
+            label = f" {index + 1} {self.t(name)} "
             self.text(row, label, "active" if index == selected else "inactive", x=x)
-            x += len(label) + 1
+            x += cell_width(label) + 1
 
     def footer(self, shortcuts: Sequence[tuple[str, str]]) -> None:
         row = self.height - 1
         self.bar(row, "", "footer")
-        quit_x = max(0, self.width - 8)
+        quit_label = " " + self.t("quit")
+        quit_x = max(0, self.width - cell_width(quit_label) - 3)
         self.text(row, "q", "key", x=quit_x)
-        self.text(row, " quit", "footer", x=quit_x + 1)
+        self.text(row, quit_label, "footer", x=quit_x + 1)
+        switch_label = " English" if self.t.code == "zh" else " 中文"
+        switch_x = quit_x - cell_width(switch_label) - 4
+        right = quit_x
+        if switch_x > 0:
+            self.text(row, "l", "key", x=switch_x)
+            self.text(row, switch_label, "footer", x=switch_x + 1)
+            right = switch_x
         x = 1
         for key, desc in shortcuts:
-            span = len(key) + len(desc) + 1
-            if x + span > quit_x - 1:
+            key, desc = self.t(key), self.t(desc)
+            key_width = cell_width(key)
+            span = key_width + cell_width(desc) + 1
+            if x + span > right - 1:
                 continue
             self.text(row, key, "key", x=x)
-            self.text(row, f" {desc}", "footer", x=x + len(key))
+            self.text(row, f" {desc}", "footer", x=x + key_width)
             x += span + 3
 
     def hex_row(

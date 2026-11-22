@@ -5,7 +5,7 @@ from time import monotonic
 from .live import LiveStatus
 from .tcp_flow import TcpTracker
 from .traffic_stats import TrafficReport, TrafficStats
-from .tui_theme import Drawing, state_role
+from .tui_theme import Drawing, cell_width, state_role
 
 
 _TABS = ("Protocols", "Endpoints", "Sessions")
@@ -39,12 +39,13 @@ class TrafficView:
                 self.top = min(max(0, self.top + step), self._last_top)
 
     def draw(self, drawing: Drawing, stats: TrafficStats, flows: TcpTracker, live_status: LiveStatus | None) -> None:
+        t = drawing.t
         height, width = drawing.height, drawing.width
         show_tabs = height >= 12 and width >= 38
         body_row = _COMPACT_BODY_ROW + int(show_tabs)
         if height < body_row + 2 or width < 19:
             if width > 0:
-                drawing.title("Enlarge the terminal")
+                drawing.title(t("Enlarge the terminal"))
                 if height > 1:
                     drawing.footer((("Esc", "back"),))
             return
@@ -58,29 +59,37 @@ class TrafficView:
             self._lines = _table_lines(report, flows, self.tab)
             self._lines_tab = self.tab
 
-        drawing.title(f"Traffic statistics | {_TABS[self.tab]}")
+        drawing.title(f"{t('Traffic statistics')} | {t(_TABS[self.tab])}")
         total = report.total
-        drawing.text(1, f"Total {total.packets} packets | {total.frame_bytes} frame B | {total.captured_bytes} captured B", "accent")
+        totals = t(
+            "Total {packets} packets | {frames} frame B | {captured} captured B",
+            packets=total.packets, frames=total.frame_bytes, captured=total.captured_bytes,
+        )
+        drawing.text(1, totals, "accent")
         if live_status is not None:
             state = live_status.state
-            drawing.text(2, state, state_role(state))
-            pcap_drops = "n/a" if live_status.pcap_drops is None else str(live_status.pcap_drops)
-            drops = f" | pcap drops {pcap_drops} | queue drops {live_status.queue_drops}"
+            state_label = t(state)
+            drawing.text(2, state_label, state_role(state))
+            pcap_drops = t("n/a") if live_status.pcap_drops is None else live_status.pcap_drops
+            drops = t(" | pcap drops {pcap} | queue drops {queue}", pcap=pcap_drops, queue=live_status.queue_drops)
             role = "warning" if live_status.pcap_drops or live_status.queue_drops else "muted"
-            drawing.text(2, drops, role, x=len(state))
+            drawing.text(2, drops, role, x=cell_width(state_label))
         if self.tab == 0:
-            hint = "Each frame can count in several protocol layers."
+            hint = t("Each frame can count in several protocol layers.")
             columns_text = "     Packets       Frame B    Captured B  Protocol"
         elif self.tab == 1:
-            hint = f"{len(report.endpoints)} IP addresses | {report.endpoint_evictions} older entries evicted"
+            hint = t(
+                "{count} IP addresses | {evictions} older entries evicted",
+                count=len(report.endpoints), evictions=report.endpoint_evictions,
+            )
             columns_text = "    Sent pkt        Sent B      Recv pkt        Recv B  IP address"
         else:
-            hint = f"Retained TCP flows and UDP pairs | {report.udp_evictions} older UDP entries evicted"
+            hint = t("Retained TCP flows and UDP pairs | {evictions} older UDP entries evicted", evictions=report.udp_evictions)
             columns_text = "     Packets       Frame B  Session"
         if show_tabs:
             drawing.tabs(3, _TABS, self.tab)
         drawing.text(body_row - 2, hint, "muted")
-        drawing.bar(body_row - 1, columns_text)
+        drawing.bar(body_row - 1, t(columns_text))
         shortcuts = [("Esc", "back"), ("Tab", "view"), ("Up/Down", "scroll")]
         if live_status is not None:
             shortcuts.append(("s", "start/stop"))
@@ -89,7 +98,7 @@ class TrafficView:
         self._last_top = max(0, len(self._lines) - self._page)
         self.top = min(self.top, self._last_top)
         if not self._lines:
-            drawing.text(body_row, "No entries yet.", "muted")
+            drawing.text(body_row, t("No entries yet."), "muted")
         for row, line in enumerate(self._lines[self.top : self.top + self._page], start=body_row):
             drawing.bar(row, line, "alternate" if row % 2 else "body")
 

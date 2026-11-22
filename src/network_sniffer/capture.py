@@ -3,10 +3,11 @@ from __future__ import annotations
 import ctypes
 import os
 from collections.abc import Generator, Iterator
-from contextlib import closing, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from ctypes.util import find_library
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 
 class CaptureError(Exception):
@@ -270,20 +271,20 @@ class _PcapWriter:
 
 @contextmanager
 def save_capture(reader: _PcapReader, path: Path) -> Iterator[_PcapWriter]:
-    # Open exclusively and let libpcap open the same file through its descriptor.
-    descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    try:
-        dumper = reader.library.pcap_dump_open(reader.handle, os.fsencode(f"/proc/self/fd/{descriptor}"))
-    finally:
-        os.close(descriptor)
-    if not dumper:
-        message = reader.library.pcap_geterr(reader.handle).decode(errors="replace")
-        raise CaptureError(f"could not save capture to {str(path)!r}: {message}")
+    with ExitStack() as cleanup:
+        with TemporaryDirectory(prefix=".network-sniffer-", dir=path.parent) as directory:
+            staged = Path(directory) / "capture.pcap"
+            os.close(os.open(staged, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+            dumper = reader.library.pcap_dump_open(reader.handle, os.fsencode(staged))
+            if not dumper:
+                message = reader.library.pcap_geterr(reader.handle).decode(errors="replace")
+                raise CaptureError(f"could not save capture to {str(path)!r}: {message}")
+            cleanup.callback(reader.library.pcap_dump_close, dumper)
 
-    try:
-        writer = _PcapWriter(reader, dumper, path)
-        writer.flush()
+            writer = _PcapWriter(reader, dumper, path)
+            # Publish the new file only after libpcap has written a valid header.
+            writer.flush()
+            os.replace(staged, path)
+
         yield writer
         writer.flush()
-    finally:
-        reader.library.pcap_dump_close(dumper)

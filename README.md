@@ -9,25 +9,26 @@
 ```bash
 sudo apt install libpcap0.8t64
 uv sync
-uv run network-sniffer --read sample.pcap
+./run.sh --read sample.pcap
 ```
 
 ### 实时抓包
 
-先列出可用网卡，再选择接口启动采集。实时抓包需要打开 Linux 抓包套接字的权限。下面以 Ubuntu / WSL2 的 `lo` 为例，用 `sudo` 启动项目虚拟环境中的程序。
+`./run.sh` 通过 `uv` 使用项目环境。实时抓包需要打开 Linux 抓包套接字的权限，脚本会按需调用 `sudo`，系统可能提示输入密码。列网卡和离线回放可以用普通用户运行。
 
 ```bash
-uv run network-sniffer --list-interfaces
-sudo -- "$PWD/.venv/bin/network-sniffer" --interface lo --snaplen 128 --write loopback.pcap
+./run.sh --snaplen 128 --write loopback.pcap
 ```
 
-在另一个终端执行 `ping -c 3 127.0.0.1` 产生流量。`--snaplen` 设置每包最多捕获的字节数，默认是 65535。`--write` 可省略，指定时文件必须是新文件。按 `s` 停止抓包会把已采集的数据刷入文件，再按 `s` 继续写入同一个文件。
+未指定 `--interface` 时，`./run.sh` 会先打开网卡选择界面。用 `↑` / `↓` 选中网卡，按 `Enter` 进入实时抓包，或按 `Esc` 取消。有 `lo` 时默认高亮它。指定 `--interface lo` 可直接进入抓包，`./run.sh --list-interfaces` 可单独列出网卡。
+
+在另一个终端执行 `ping -c 3 127.0.0.1` 产生流量。`--snaplen` 设置每包最多捕获的字节数，默认是 65535。`--write` 可省略，启动新的抓包会覆盖同名输出文件。按 `s` 停止抓包会把已采集的数据刷入文件，再按 `s` 继续写入本次抓包的文件。
 
 如果用 `sudo` 抓包，输出文件由 root 持有。退出抓包后，可将文件交给当前用户并离线回放。
 
 ```bash
 sudo chown -- "$(id -u):$(id -g)" loopback.pcap
-uv run network-sniffer --read loopback.pcap
+./run.sh --read loopback.pcap
 ```
 
 实时界面最多保留最近 512 个可浏览的数据包。`pcap drops` 来自 libpcap，`queue drops` 记录应用队列已满时未送达界面的包。启用 `--write` 后，采集线程会先写入 `.pcap`，再尝试将包放入界面队列。
@@ -37,8 +38,8 @@ uv run network-sniffer --read loopback.pcap
 `--capture-filter` 使用 libpcap 的 BPF 语法，在采集阶段筛选要保留和写入 `.pcap` 的包。离线回放也可以用这个选项筛选从文件读入的包，原文件保持原样。BPF 中的 IPv4、IPv6 和 ICMPv6 分别写作 `ip`、`ip6` 和 `icmp6`。 [libpcap BPF 语法](https://github.com/the-tcpdump-group/libpcap/blob/master/pcap-filter.manmisc.in)
 
 ```bash
-sudo -- "$PWD/.venv/bin/network-sniffer" --interface lo --capture-filter 'tcp or icmp6' --write filtered.pcap
-uv run network-sniffer --read sample.pcap --capture-filter 'udp or icmp'
+./run.sh --interface lo --capture-filter 'tcp or icmp6' --write filtered.pcap
+./run.sh --read sample.pcap --capture-filter 'udp or icmp'
 ```
 
 显示过滤在 TUI 中按 `/` 编辑。`Enter` 应用，`Esc` 取消，`Ctrl+U` 清空输入后按 `Enter` 恢复显示所有已读入或仍保留的包。界面会显示匹配数量。无效表达式会显示错误列号并保留上一条规则。
@@ -89,7 +90,7 @@ PY
 在另一个终端把 `12345` 替换成服务打印的 PID，并开始抓包。
 
 ```bash
-sudo -- "$PWD/.venv/bin/network-sniffer" --interface lo --pid 12345 --capture-filter 'tcp port 18765'
+./run.sh --interface lo --pid 12345 --capture-filter 'tcp port 18765'
 ```
 
 在第三个终端发起连接。抓包界面应显示该 PID 的流，在流详情可看到归属来源。验证短连接时先用 `sudo apt install bpftrace` 准备事件依赖，将服务参数 `2` 改为 `0`，再用新 PID 启动抓包并等到 `Kernel events active`。
@@ -103,6 +104,15 @@ uv run --locked python -m unittest discover -s tests -p 'test_process_tracker.py
 ```
 
 ### 界面操作
+
+TUI 默认使用英文。启动时用 `--lang zh` 选择中文，或用 `--lang en` 选择英文。
+
+```bash
+./run.sh --lang zh
+./run.sh --lang zh --read sample.pcap
+```
+
+在网卡选择和抓包、分析等界面按小写 `l`，可切换当前会话的语言。中文界面需要 UTF-8 终端。
 
 标题栏显示当前文件、采集状态或正在查看的流，标签页和底部快捷键栏用于切换视图。包列表在宽终端上分成列表和选中包预览，在窄终端上切回单栏。选中项、警告和错误既有颜色，也有文字或符号提示。设置 `NO_COLOR=1` 可使用无色界面。
 
@@ -121,6 +131,7 @@ uv run --locked python -m unittest discover -s tests -p 'test_process_tracker.py
 | `v` | 打开或返回流量统计 |
 | `s` | 开始或停止实时采集 |
 | `f` | 回到最新数据包并跟随实时流量 |
+| `l` | 切换中文和英文 |
 | `q` | 退出 |
 
 打开文件或开始实时采集时，默认显示十六进制视图。协议树每行的 `偏移+长度` 从帧头起算，偏移用十六进制表示，长度以字节计并用十进制表示。比如 `0022+2` 指从 `0x22` 开始的两个字节。截断、分片、格式错误和未支持的协议会在协议树顶部标明，仍可查看已经解析出的字段。
@@ -153,13 +164,13 @@ uv run --locked python -m unittest discover -s tests -v
 用自带的样本打开统计视图。按 `v` 后应看到 `3 packets`、`566 frame B` 和 `532 captured B`。
 
 ```bash
-uv run network-sniffer --read sample.pcap
+./run.sh --read sample.pcap
 ```
 
 验证实时 HTTP 分析时，先在一个终端启动抓包。
 
 ```bash
-sudo -- "$PWD/.venv/bin/network-sniffer" --interface lo --capture-filter 'tcp port 18765'
+./run.sh --interface lo --capture-filter 'tcp port 18765'
 ```
 
 等界面显示 `Capturing`，在另一个终端产生一次本机 HTTP 请求和响应。回到抓包界面选中任意一个 TCP 包，按 `Enter` 再按 `4`，应看到 `HTTP GET /demo` 和 `HTTP 200 OK`。

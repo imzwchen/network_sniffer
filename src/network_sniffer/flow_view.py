@@ -26,6 +26,7 @@ class FlowView:
     _payloads: dict[int, ReassembledPayload] = field(default_factory=dict)
     _revision: tuple[int, int] | None = None
     _analysis_lines: list[tuple[str, str]] | None = None
+    _analysis_language: str | None = None
     _analysis_refresh_at: float = 0.0
 
     def handle_key(self, key: int) -> None:
@@ -47,6 +48,7 @@ class FlowView:
         self, drawing: Drawing, flow: FlowSnapshot | None, *, live: bool,
         owners: tuple[FlowOwner, ...] | None = None,
     ) -> None:
+        t = drawing.t
         height, width = drawing.height, drawing.width
         if width <= 0:
             return
@@ -56,27 +58,30 @@ class FlowView:
         if live:
             shortcuts.append(("s", "start/stop"))
         if height < self._body_row + 2 or width < 19:
-            drawing.title("Enlarge the terminal")
+            drawing.title(t("Enlarge the terminal"))
             if height > 1:
                 drawing.footer(shortcuts[:1])
             return
         drawing.footer(shortcuts)
         if flow is None:
-            drawing.title(f"TCP flow #{self.flow_number}")
-            drawing.text(2, "History expired", "warning")
+            drawing.title(t("TCP flow #{number}", number=self.flow_number))
+            drawing.text(2, t("History expired"), "warning")
             self._payloads.clear()
             self._analysis_lines = None
             return
 
-        start = "" if flow.start_seen else " | Start not observed"
-        drawing.title(f"TCP flow #{flow.number}", flow.state, start)
+        start = "" if flow.start_seen else " | " + t("Start not observed")
+        drawing.title(t("TCP flow #{number}", number=flow.number), flow.state, start)
         drawing.text(1, f"A  {flow.endpoints[0]}", _DIRECTION_ROLES[0])
         drawing.text(2, f"B  {flow.endpoints[1]}", _DIRECTION_ROLES[1])
         events = []
         for index, direction in enumerate(flow.directions):
             label = _DIRECTIONS[index]
-            totals = f"{label}  {direction.packets} packets | {direction.payload_bytes} captured payload B"
-            drawing.text(3 + index, totals + f" | {direction.frame_bytes} frame B")
+            totals = t(
+                "{direction}  {packets} packets | {payload} captured payload B | {frames} frame B",
+                direction=label, packets=direction.packets, payload=direction.payload_bytes, frames=direction.frame_bytes,
+            )
+            drawing.text(3 + index, totals)
             if direction.syn_packet is not None:
                 events.append(f"SYN {label} #{direction.syn_packet}")
             if direction.fin_packet is not None:
@@ -87,10 +92,10 @@ class FlowView:
             drawing.text(5, " | ".join(events), "warning" if flow.rst_packet is not None else "muted")
         status = []
         if owners is not None:
-            labels = [f"PID {owner.pid} ({owner.source})" for owner in owners]
-            status.append("Owners " + ", ".join(dict.fromkeys(labels)) if labels else "Owner unknown")
+            labels = [f"PID {owner.pid} ({t(owner.source)})" for owner in owners]
+            status.append(t("Owners {owners}", owners=", ".join(dict.fromkeys(labels))) if labels else t("Owner unknown"))
         if flow.omitted_packets:
-            status.append(f"Live history omitted {flow.omitted_packets} older packets")
+            status.append(t("Live history omitted {count} older packets", count=flow.omitted_packets))
         if status:
             drawing.text(6, " | ".join(status), "warning" if flow.omitted_packets or owners == () else "muted")
 
@@ -109,18 +114,19 @@ class FlowView:
         self.top = min(self.top, self._last_top)
 
     def _draw_packets(self, drawing: Drawing, flow: FlowSnapshot) -> None:
-        columns = "   No  Dir      Time (s)        Seq        Ack  Data B  Flags"
+        t = drawing.t
+        columns = t("   No  Dir      Time (s)        Seq        Ack  Data B  Flags")
         drawing.bar(self._body_row - 1, columns)
         self._set_length(len(flow.packets))
         if not flow.packets:
-            drawing.text(self._body_row, "No packets retained for this flow.", "muted")
+            drawing.text(self._body_row, t("No packets retained for this flow."), "muted")
             return
         first = flow.packets[0].timestamp_us
         for row, packet in enumerate(flow.packets[self.top : self.top + self._page], start=self._body_row):
             relative_time = (packet.timestamp_us - first) / 1_000_000
             sequence = "-" if packet.sequence is None else str(packet.sequence)
             ack = "-" if packet.acknowledgment is None else str(packet.acknowledgment)
-            partial = " [partial]" if packet.partial else ""
+            partial = t(" [partial]") if packet.partial else ""
             line = (
                 f"{packet.number:5}  {_DIRECTIONS[packet.direction]}  {relative_time:12.6f} "
                 f"{sequence:>10} {ack:>10} {len(packet.payload):7}  {format_tcp_flags(packet.flags)}{partial}"
@@ -141,6 +147,10 @@ class FlowView:
         return self._payloads[direction]
 
     def _draw_analysis(self, drawing: Drawing, flow: FlowSnapshot, live: bool) -> None:
+        t = drawing.t
+        if self._analysis_language != t.code:
+            self._analysis_lines = None
+            self._analysis_language = t.code
         now = monotonic()
         if self._analysis_lines is None or not live or now >= self._analysis_refresh_at:
             self._update_revision(flow)
@@ -148,32 +158,33 @@ class FlowView:
             lines = []
             for direction, metrics in enumerate(tcp_metrics(flow)):
                 label = _DIRECTIONS[direction]
-                lines.append((f"{label} probable retransmissions {metrics.retransmissions}",
+                lines.append((t("{direction} probable retransmissions {count}", direction=label, count=metrics.retransmissions),
                               "warning" if metrics.retransmissions else _DIRECTION_ROLES[direction]))
                 if metrics.rtt_samples:
-                    estimate = (
-                        f"  RTT estimate {metrics.rtt_samples} samples | min {metrics.minimum_us / 1000:.3f} ms"
-                        f" | mean {metrics.mean_us / 1000:.3f} ms | max {metrics.maximum_us / 1000:.3f} ms"
+                    estimate = t(
+                        "  RTT estimate {count} samples | min {minimum:.3f} ms | mean {mean:.3f} ms | max {maximum:.3f} ms",
+                        count=metrics.rtt_samples, minimum=metrics.minimum_us / 1000,
+                        mean=metrics.mean_us / 1000, maximum=metrics.maximum_us / 1000,
                     )
                     lines.append((estimate, "body"))
                 else:
-                    lines.append(("  RTT estimate unavailable (no unambiguous ACK sample)", "muted"))
+                    lines.append((t("  RTT estimate unavailable (no unambiguous ACK sample)"), "muted"))
 
             dns = any(endpoint.port == 53 for endpoint in flow.endpoints)
             for direction, label in enumerate(_DIRECTIONS):
                 messages, note = application_messages(self._payload(flow, direction), dns=dns)
                 if not messages:
-                    lines.append((f"{label} no recognized application message", "muted"))
+                    lines.append((t("{direction} no recognized application message", direction=label), "muted"))
                 for message in messages:
-                    lines.append((f"{label} {message.title}", "section"))
-                    lines.extend((f"  {item.label} = {item.text}", "body") for item in message.fields)
+                    lines.append((f"{label} {t(message.title)}", "section"))
+                    lines.extend((f"  {t(item.label)} = {item.text}", "body") for item in message.fields)
                     if message.note:
-                        lines.append((f"  {message.note}", "warning"))
+                        lines.append((f"  {t.detail(message.note)}", "warning"))
                 if note:
-                    lines.append((f"  {note}", "warning"))
+                    lines.append((f"  {t.detail(note)}", "warning"))
             self._analysis_lines = lines
             self._analysis_refresh_at = now + 0.25
-        heading = "Flow analysis | TCP and application messages"
+        heading = t("Flow analysis | TCP and application messages")
         drawing.bar(self._body_row - 1, heading)
         self._set_length(len(self._analysis_lines))
         for row, (line, role) in enumerate(self._analysis_lines[self.top : self.top + self._page], start=self._body_row):
@@ -183,17 +194,19 @@ class FlowView:
                 drawing.text(row, line, role)
 
     def _draw_payload(self, drawing: Drawing, flow: FlowSnapshot) -> None:
+        t = drawing.t
         direction = self.tab - 1
         self._update_revision(flow)
         result = self._payload(flow, direction)
-        title = (
-            f"{_DIRECTIONS[direction]} payload | {result.captured_bytes} unique B | "
-            f"{result.missing_bytes} gap B | {result.overlapping_bytes} overlap B"
+        title = t(
+            "{direction} payload | {captured} unique B | {missing} gap B | {overlap} overlap B",
+            direction=_DIRECTIONS[direction], captured=result.captured_bytes,
+            missing=result.missing_bytes, overlap=result.overlapping_bytes,
         )
         drawing.bar(self._body_row - 1, title)
         if not result.spans:
             self._set_length(0)
-            drawing.text(self._body_row, "No payload bytes observed in this direction.", "muted")
+            drawing.text(self._body_row, t("No payload bytes observed in this direction."), "muted")
             return
 
         stride = min(16, (drawing.width - 11) // 4)
@@ -206,7 +219,8 @@ class FlowView:
                 continue
             for line in range(skip, min(count, skip + self._body_row + self._page - row)):
                 if span.data is None:
-                    drawing.text(row, f"{span.offset:08x}  [gap {span.length} bytes]", "warning")
+                    gap = t("[gap {length} bytes]", length=span.length)
+                    drawing.text(row, f"{span.offset:08x}  {gap}", "warning")
                 else:
                     start = line * stride
                     drawing.hex_row(row, span.offset + start, span.data[start : start + stride], stride)
